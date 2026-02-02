@@ -1,4 +1,4 @@
-##🎓 Student Progress AI Companion
+## 🎓Student Progress AI Companion
 
 An AI-powered study tracking app built with Streamlit, Python, MySQL, and OpenCV. It helps DSA and Data Science students log study activities, track focused study time via webcam, visualize progress with dashboards, and test knowledge using quizzes.
 
