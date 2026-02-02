@@ -1,2 +1,23 @@
-# Student-Progress-AI-Companion
-Student Progress AI Companion is an AI-powered Streamlit app for tracking DSA and Data Science learning. It uses MySQL for persistent storage, OpenCV-based camera monitoring to auto-detect focused study time, interactive dashboards, quizzes, weekly insights, and file/notes management for smart academic progress tracking.
+##🎓 Student Progress AI Companion
+
+An AI-powered study tracking app built with Streamlit, Python, MySQL, and OpenCV. It helps DSA and Data Science students log study activities, track focused study time via webcam, visualize progress with dashboards, and test knowledge using quizzes.
+
+🚀 Features
+
+Daily study logs (topics, hours, problems)
+
+Camera-based focus tracking
+
+Interactive dashboards & weekly insights
+
+Built-in quizzes
+
+Local file uploads for notes/solutions
+
+🛠 Tech Stack
+
+Streamlit · Python · MySQL · OpenCV · Altair
+
+▶️ Run
+pip install -r requirements.txt
+streamlit run app.py
