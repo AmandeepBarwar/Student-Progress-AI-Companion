@@ -5,34 +5,26 @@ import os
 import altair as alt
 import cv2
 import numpy as np
-import psycopg2
-from psycopg2.extras import RealDictCursor
+from sqlalchemy import create_engine
+from streamlit_webrtc import streamlit_webrtc_interface, VideoTransformerBase
 
 # --------------------------------
-# 🗄️ POSTGRESQL DATABASE CONNECTION (Updated to Support Neon Cloud & Local Fallback)
+# 🗄️ POSTGRESQL DATABASE CONNECTION (Updated with SQLAlchemy Contexts)
 # --------------------------------
-# Looks for the standard Streamlit Cloud Secrets variable, falls back to local environment
 DB_URL = os.getenv("DATABASE_URL")
 
-def get_conn():
-    """Establishes a connection to the PostgreSQL database (Production or Local Fallback)."""
+def get_sqla_engine():
+    """Creates a clean SQLAlchemy connection engine for database operations."""
     if DB_URL:
-        # Production: Connect to your free Neon Cloud DB
-        return psycopg2.connect(DB_URL)
+        # Neon connection strings often use postgres://, but SQLAlchemy strictly requires postgresql://
+        uri = DB_URL.replace("postgres://", "postgresql://") if DB_URL.startswith("postgres://") else DB_URL
+        return create_engine(uri)
     else:
-        # Local Development: Fallback if you test on your machine
-        return psycopg2.connect(
-            host="localhost",
-            database="student_progress",
-            user="postgres",
-            password="npg_FlwQbk3izPg0",
-            port=5432
-        )
+        # Local Development Fallback
+        return create_engine("postgresql://postgres:npg_FlwQbk3izPg0@localhost:5432/student_progress")
 
 def ensure_table():
-    """
-    Creates the study_logs table automatically if it doesn't exist.
-    """
+    """Creates the study_logs table automatically if it doesn't exist."""
     sql = """
     CREATE TABLE IF NOT EXISTS study_logs (
         id SERIAL PRIMARY KEY,
@@ -43,60 +35,40 @@ def ensure_table():
         date DATE NOT NULL
     );
     """
-    conn = None
     try:
-        conn = get_conn()
-        cur = conn.cursor()
-        cur.execute(sql)
-        conn.commit()
-        cur.close()
+        engine = get_sqla_engine()
+        with engine.begin() as conn:
+            conn.exec_driver_sql(sql)
     except Exception as e:
         st.error(f"❌ Database initialization failed: {e}")
-    finally:
-        if conn:
-            conn.close()
 
 def insert_log(subject, topic, hours, problems, date_value):
-    """
-    Inserts a new study log using raw psycopg2 parameterized %s bindings.
-    """
+    """Inserts a new study log using safe execution contexts."""
     sql = """
     INSERT INTO study_logs (subject, topic, hours_studied, problems_solved, date)
     VALUES (%s, %s, %s, %s, %s);
     """
-    conn = None
     try:
-        conn = get_conn()
-        cur = conn.cursor()
-        cur.execute(sql, (subject, topic, float(hours), int(problems), date_value))
-        conn.commit()
-        cur.close()
+        engine = get_sqla_engine()
+        with engine.begin() as conn:
+            conn.exec_driver_sql(sql, (subject, topic, float(hours), int(problems), date_value))
     except Exception as e:
         st.error(f"❌ Failed to save record: {e}")
-    finally:
-        if conn:
-            conn.close()
 
 def fetch_subject_df(subject):
-    """
-    Fetches study records for a given subject and structures it into a Pandas DataFrame.
-    """
+    """Fetches study records via SQLAlchemy to cleanly return a pandas DataFrame without warnings."""
     sql = """
     SELECT subject AS "Subject", topic AS "Topic", 
            hours_studied AS "Hours Studied", problems_solved AS "Problems Solved", date AS "Date" 
     FROM study_logs WHERE subject = %s;
     """
-    conn = None
     df = pd.DataFrame(columns=["Subject", "Topic", "Hours Studied", "Problems Solved", "Date"])
     try:
-        conn = get_conn()
-        # Read SQL directly using pandas + psycopg2 connection context
-        df = pd.read_sql_query(sql, conn, params=(subject,))
+        engine = get_sqla_engine()
+        with engine.connect() as conn:
+            df = pd.read_sql_query(sql, conn, params=(subject,))
     except Exception as e:
         st.error(f"❌ Failed to fetch data: {e}")
-    finally:
-        if conn:
-            conn.close()
     return df
 
 # Initialize database schemas cleanly before page configurations boot
@@ -278,22 +250,48 @@ def log_entry_page():
         st.rerun()
 
 # --------------------------------
+# 📷 WEB CAMERA STREAM TRANSFORMER (Cloud-safe Alternative)
+# --------------------------------
+class FaceExpressionTransformer(VideoTransformerBase):
+    """Processes real-time camera frames securely sent over WebRTC from the user's browser."""
+    def __init__(self):
+        self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+
+    def transform(self, frame):
+        img = frame.to_ndarray(format="bgr24")
+        img = cv2.flip(img, 1)
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        
+        # Detect faces
+        faces = self.face_cascade.detectMultiScale(gray, 1.1, 4, minSize=(40, 40))
+        face_detected = len(faces) > 0
+        frame_color = (0, 255, 0) if face_detected else (100, 100, 100)
+        status = "✅ Person Detected — Studying" if face_detected else "⏸ Waiting for Person"
+
+        for (x, y, w_face, h_face) in faces:
+            cv2.rectangle(img, (x, y), (x + w_face, y + h_face), frame_color, 2)
+            
+        h, w = img.shape[:2]
+        cv2.rectangle(img, (0, 0), (w, h), frame_color, 3)
+        cv2.putText(img, status, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, frame_color, 2)
+        
+        return img
+
+# --------------------------------
 # 📋 FILL LOGS PAGE
 # --------------------------------
 def fill_logs_page(subject):
     st.markdown(f"## ✏ Add {subject} Learning Logs")
-    st.markdown("**📷 Real-time Camera Monitoring: Detect person sitting & auto-detect study hours.**")
+    st.markdown("**📷 Browser WebRTC Camera: Secure tracking optimized for Cloud Deployments.**")
 
     dsa_topics = [
         "Arrays", "Strings", "Linked List", "Stack", "Queue",
         "Trees", "Graphs", "Dynamic Programming", "Sorting", "Searching"
     ]
-
     ds_topics = [
         "Python", "Pandas", "NumPy", "Statistics", "Machine Learning",
         "Deep Learning", "Data Preprocessing", "Visualization", "SQL", "EDA"
     ]
-
     topics = dsa_topics if subject == "DSA" else ds_topics
 
     st.markdown("### Step 1 — Select Topic")
@@ -304,209 +302,76 @@ def fill_logs_page(subject):
     except Exception:
         df = pd.DataFrame(columns=["Date", "Topic", "Hours Studied", "Problems Solved"])
 
-    st.markdown("### Step 2 — Real-Time Study Monitoring (Detect Person Sitting)")
-    st.info("📌 Click 'Start Monitoring' to begin. Session will auto-stop when you leave camera or after long inactivity. Hours are auto-detected and saved.")
+    st.markdown("### Step 2 — Real-Time Study Monitoring")
+    st.info("📌 Press 'Start' on the media player box below to begin tracking. Grant permission to your camera inside your web browser.")
 
-    col_cam1, col_cam2 = st.columns([2, 1])
-    with col_cam1:
-        camera_placeholder = st.empty()
-    with col_cam2:
-        focus_metric = st.empty()
-        duration_metric = st.empty()
-        attention_metric = st.empty()
+    # Render safe browser streaming channel interface
+    webrtc_ctx = streamlit_webrtc_interface(
+        key="student-companion-video",
+        video_transformer_factory=FaceExpressionTransformer,
+        rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+    )
 
-    # Initialize session states safely
-    if "monitoring_active" not in st.session_state:
-        st.session_state.monitoring_active = False
-    if "start_time" not in st.session_state:
-        st.session_state.start_time = None
-    if "cap" not in st.session_state:
-        st.session_state.cap = None
-    if "study_frames" not in st.session_state:
-        st.session_state.study_frames = 0
-    if "total_frames" not in st.session_state:
-        st.session_state.total_frames = 0
-    if "no_person_frames" not in st.session_state:
-        st.session_state.no_person_frames = 0
-    if "prev_gray" not in st.session_state:
-        st.session_state.prev_gray = None
+    # Initialize tracking timestamps in background state variables
+    if webrtc_ctx.state.playing:
+        if "session_start_time" not in st.session_state:
+            st.session_state.session_start_time = datetime.datetime.now()
+    else:
+        if "session_start_time" in st.session_state:
+            # Calculate final logs once streaming shuts off or stops
+            st.session_state.session_end_time = datetime.datetime.now()
 
-    col_btn1, col_btn2 = st.columns(2)
-    with col_btn1:
-        if st.button("▶ Start Monitoring", key="start_monitor"):
-            st.session_state.monitoring_active = True
-            st.session_state.start_time = datetime.datetime.now()
-            cap = None
-            for camera_idx in [0, 1, -1]:
-                cap = cv2.VideoCapture(camera_idx)
-                if cap.isOpened():
-                    st.session_state.cap = cap
-                    break
-                else:
-                    cap.release()
-            
-            if not st.session_state.cap or not st.session_state.cap.isOpened():
-                st.error("❌ No camera found. Please check camera connection.")
-                st.session_state.monitoring_active = False
-                st.rerun()
-                return
+    st.markdown("---")
+    st.markdown("### Step 3 — Finalize & Save Study Log")
+    
+    # Manual fallback helper or auto calculation metrics if user hit stop on streaming block
+    if "session_start_time" in st.session_state:
+        end = st.session_state.get("session_end_time", datetime.datetime.now())
+        calculated_hours = max((end - st.session_state.session_start_time).total_seconds() / 3600.0, 0.01)
+    else:
+        calculated_hours = 1.0
+
+    total_hours = st.number_input("Adjust Monitored Hours Studied", min_value=0.01, max_value=24.0, value=float(f"{calculated_hours:.2f}"))
+    problems = st.number_input("Number of Questions / Problems Solved", min_value=0, step=1, value=0, key="auto_problems")
+    notes = st.text_area("Study Notes / Summary", placeholder="Write brief notes...", key="auto_notes")
+    uploaded = st.file_uploader("Upload solution files (optional)", accept_multiple_files=True, key="auto_upload")
+
+    if st.button("✅ Save Study Log to Database", key="save_auto_log"):
+        date_value = datetime.date.today()
+        try:
+            insert_log(subject, topic, total_hours, problems, date_value)
+            st.success(f"✅ Saved {total_hours:.2f}h for {topic} to database!")
+
+            save_dir = os.path.join(os.path.dirname(__file__), "saved_solutions")
+            os.makedirs(save_dir, exist_ok=True)
+            for f in uploaded:
+                fname = f"{subject}_{topic}_{date_value}_{int(datetime.datetime.now().timestamp())}_{f.name}"
+                with open(os.path.join(save_dir, fname), "wb") as out:
+                    out.write(f.getbuffer())
+
+            if notes:
+                notes_fname = f"{subject}_{topic}_{date_value}_{int(datetime.datetime.now().timestamp())}_notes.txt"
+                with open(os.path.join(save_dir, notes_fname), "w", encoding="utf-8") as nf:
+                    nf.write(notes)
+
+            # Clear out runtime monitoring tags
+            if "session_start_time" in st.session_state: del st.session_state["session_start_time"]
+            if "session_end_time" in st.session_state: del st.session_state["session_end_time"]
+
+            st.balloons()
             st.rerun()
+        except Exception as e:
+            st.error(f"❌ Save failed: {e}")
 
-    with col_btn2:
-        if st.button("⏹️ Stop Monitoring Now", key="stop_monitor"):
-            st.session_state.monitoring_active = False
-            if st.session_state.cap:
-                st.session_state.cap.release()
-                st.session_state.cap = None
+    st.markdown("---")
+    st.markdown("### Recent Logs")
+    if not df.empty:
+        st.dataframe(df.sort_values("Date", ascending=False).reset_index(drop=True), use_container_width=True)
 
-    # Run loop logic if monitoring is up
-    if st.session_state.monitoring_active and st.session_state.cap:
-        cap = st.session_state.cap
-
-        if not cap.isOpened():
-            st.error("❌ Camera disconnected.")
-            st.session_state.monitoring_active = False
-            st.rerun()
-            return
-
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
-        cap.set(cv2.CAP_PROP_FPS, 15)
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-
-        face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
-
-        frames_per_update = 3
-        frame_count = 0
-
-        while frame_count < frames_per_update and st.session_state.monitoring_active:
-            ret, frame = cap.read()
-            if not ret:
-                st.warning("⚠️ Camera frame not available. Retrying...")
-                continue
-
-            frame = cv2.flip(frame, 1)
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-
-            faces = face_cascade.detectMultiScale(gray, 1.1, 4, minSize=(40, 40))
-            face_detected = len(faces) > 0
-
-            if st.session_state.prev_gray is None:
-                st.session_state.prev_gray = gray.copy()
-                frame_color = (100, 100, 100)
-                status = "⏸ Initializing..."
-            else:
-                frame_diff = cv2.absdiff(st.session_state.prev_gray, gray)
-                st.session_state.prev_gray = gray.copy()
-
-                if face_detected:
-                    st.session_state.study_frames += 1
-                    st.session_state.no_person_frames = 0
-                    frame_color = (0, 255, 0)
-                    status = "✅ Person Detected — Studying"
-                else:
-                    st.session_state.no_person_frames += 1
-                    if st.session_state.no_person_frames > 100:
-                        frame_color = (0, 0, 255)
-                    else:
-                        frame_color = (100, 100, 100)
-                    status = "⏸ Waiting for Person"
-
-            st.session_state.total_frames += 1
-            frame_count += 1
-
-            for (x, y, w_face, h_face) in faces:
-                cv2.rectangle(frame, (x, y), (x + w_face, y + h_face), frame_color, 2)
-            h, w = frame.shape[:2]
-            cv2.rectangle(frame, (0, 0), (w, h), frame_color, 3)
-            cv2.putText(frame, status, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, frame_color, 2)
-
-            elapsed = datetime.datetime.now() - st.session_state.start_time
-            elapsed_seconds = elapsed.total_seconds()
-            elapsed_hours = int(elapsed_seconds // 3600)
-            elapsed_minutes = int((elapsed_seconds % 3600) // 60)
-            elapsed_secs = int(elapsed_seconds % 60)
-
-            camera_placeholder.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-
-            efficiency = (st.session_state.study_frames / st.session_state.total_frames * 100) if st.session_state.total_frames > 0 else 0
-            focus_metric.metric("Focus Rate", f"{efficiency:.1f}%")
-            duration_metric.metric("Session Time", f"{elapsed_hours}h {elapsed_minutes}m {elapsed_secs}s")
-            attention_metric.metric("Attention Level", "🟢 Good" if efficiency > 70 else "🟡 Fair" if efficiency > 40 else "🔴 Low")
-
-            if st.session_state.no_person_frames > 150:
-                st.session_state.monitoring_active = False
-                if st.session_state.cap:
-                    st.session_state.cap.release()
-                    st.session_state.cap = None
-                st.info("Session auto-stopped: No person detected for extended period.")
-                break
-
-        st.rerun()
-
-    # Finalize form after capture module terminates
-    if not st.session_state.monitoring_active and st.session_state.total_frames > 0:
-        if st.session_state.cap:
-            st.session_state.cap.release()
-            st.session_state.cap = None
-
-        st.markdown("---")
-        st.markdown("### Step 3 — Finalize & Save Study Log")
-        
-        total_elapsed = datetime.datetime.now() - st.session_state.start_time
-        total_hours = total_elapsed.total_seconds() / 3600.0
-        
-        st.markdown(f"- **Auto-detected hours:** {total_hours:.3f}h")
-        st.markdown(f"- **Detected focus:** {(st.session_state.study_frames / st.session_state.total_frames * 100):.1f}%")
-
-        problems = st.number_input("Number of Questions / Problems Solved", min_value=0, step=1, value=0, key="auto_problems")
-        notes = st.text_area("Study Notes / Summary", placeholder="Write brief notes...", key="auto_notes")
-        uploaded = st.file_uploader("Upload solution files (optional)", accept_multiple_files=True, key="auto_upload")
-
-        if st.button("✅ Save Study Log to Database", key="save_auto_log"):
-            date_value = datetime.date.today()
-            try:
-                insert_log(subject, topic, total_hours, problems, date_value)
-                st.success(f"✅ Saved {total_hours:.2f}h for {topic} to database!")
-
-                save_dir = os.path.join(os.path.dirname(__file__), "saved_solutions")
-                os.makedirs(save_dir, exist_ok=True)
-                for f in uploaded:
-                    fname = f"{subject}_{topic}_{date_value}_{int(datetime.datetime.now().timestamp())}_{f.name}"
-                    with open(os.path.join(save_dir, fname), "wb") as out:
-                        out.write(f.getbuffer())
-
-                if notes:
-                    notes_fname = f"{subject}_{topic}_{date_value}_{int(datetime.datetime.now().timestamp())}_notes.txt"
-                    with open(os.path.join(save_dir, notes_fname), "w", encoding="utf-8") as nf:
-                        nf.write(notes)
-
-                for k in ("monitoring_active", "start_time", "cap", "study_frames", "total_frames", "no_person_frames", "prev_gray"):
-                    if k in st.session_state:
-                        del st.session_state[k]
-
-                st.balloons()
-                st.rerun()
-
-            except Exception as e:
-                st.error(f"❌ Save failed: {e}")
-
-    # Fallback to display historical datatable logs
-    if not st.session_state.monitoring_active and st.session_state.total_frames == 0:
-        st.markdown("---")
-        st.markdown("### Recent Logs")
-        if not df.empty:
-            st.dataframe(df.sort_values("Date", ascending=False).reset_index(drop=True), use_container_width=True)
-
-    # Navigation controller hooks
     if st.button("⬅ Back to Log Menu"):
+        if "session_start_time" in st.session_state: del st.session_state["session_start_time"]
+        if "session_end_time" in st.session_state: del st.session_state["session_end_time"]
         st.session_state.page = "log_entry"
-        if st.session_state.cap:
-            st.session_state.cap.release()
-            st.session_state.cap = None
-        for k in ("monitoring_active", "start_time", "cap", "study_frames", "total_frames", "no_person_frames", "prev_gray"):
-            if k in st.session_state:
-                del st.session_state[k]
         st.rerun()
 
 # --------------------------------
