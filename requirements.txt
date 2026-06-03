@@ -4,5 +4,4 @@ altair
 opencv-python
 mysql-connector-python
 python-dotenv
-cv2
 opencv-python-headless
