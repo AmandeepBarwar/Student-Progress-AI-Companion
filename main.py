@@ -709,5 +709,3 @@ elif st.session_state.page == "quiz_topic":
     quiz_topic_page(st.session_state.quiz_subject)
 elif st.session_state.page == "quiz_questions":
     quiz_questions_page(st.session_state.quiz_subject, st.session_state.quiz_topic)
-
-```
