@@ -1,23 +1,3 @@
-The logic you've set up to isolate `webrtc_streamer` into its own structural column is exactly the right instinct for managing its UI presence. However, the reason your app is still throwing instant `AttributeError: 'NoneType' object has no attribute 'is_alive'` or layout crashes comes down to an implicit feedback loop in how you calculate and display elements right next to the stream.
-
-### Why it still crashes
-
-1. **The State Mutation Trap:** Inside `fill_logs_page()`, right below the `webrtc_streamer`, you are tracking elapsed time by reading `webrtc_ctx.state.playing` and immediately writing `st.session_state.session_start_time = datetime.datetime.now()`.
-2. **The Rerun Feedback Loop:** The exact millisecond the WebRTC connection is initialized, `webrtc_ctx.state.playing` changes to `True`. Because this happens inside a standard drawing function, mutating `st.session_state` *during* the execution of `form_col` triggers a hidden, microsecond-fast page refresh loop. This forces Streamlit to rebuild the components before the underlying thread finishes spinning up, resulting in the worker being destroyed mid-flight (leaving it as a `NoneType` value).
-3. **The Score Radio Re-evaluation:** Down in your `quiz_questions_page()`, you have `st.success()` and `st.warning()` displaying directly underneath the `st.radio()` items without wrapping them in a form submission step. Every time Streamlit processes a radio input change, it checks the condition immediately, which can cause erratic behavior if a user tries to click through questions quickly.
-
----
-
-### The Fix
-
-To break this cycle, we need to:
-
-* **Decouple the session timer** from the stream lifecycle so it updates only when the video context is firmly established.
-* **Wrap the tracking conditions** in basic safe-fallback structures so that if the stream drops, it silently skips rendering rather than crashing out the entire session.
-
-Here is your updated, production-ready `main.py` code with all layout structures fixed:
-
-```python
 import streamlit as st
 import pandas as pd
 import datetime
