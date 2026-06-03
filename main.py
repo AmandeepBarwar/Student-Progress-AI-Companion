@@ -305,66 +305,71 @@ def fill_logs_page(subject):
     except Exception:
         df = pd.DataFrame(columns=["Date", "Topic", "Hours Studied", "Problems Solved"])
 
+    # --- WEBRTC MULTI-COLUMN DESIGN PATTERN FIX ---
+    # We decouple the active camera components into a separate structural layout block.
+    # This shields the WebRTC engine thread lifecycle from interaction updates in form fields.
     st.markdown("### Step 2 — Real-Time Study Monitoring")
-    st.info("📌 Press 'Start' on the media player box below to begin tracking. Grant permission to your camera inside your web browser.")
-
-    # Fixed parameter routing to support newer component designs 
-    webrtc_ctx = webrtc_streamer(
-        key="student-companion-video",
-        video_processor_factory=FaceExpressionTransformer,
-        rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
-    )
-
-    # Initialize tracking timestamps in background state variables
-    if webrtc_ctx and webrtc_ctx.state.playing:
-        if "session_start_time" not in st.session_state:
-            st.session_state.session_start_time = datetime.datetime.now()
-    else:
-        if "session_start_time" in st.session_state:
-            # Calculate final logs once streaming shuts off or stops
-            st.session_state.session_end_time = datetime.datetime.now()
-
-    st.markdown("---")
-    st.markdown("### Step 3 — Finalize & Save Study Log")
     
-    # Manual fallback helper or auto calculation metrics if user hit stop on streaming block
-    if "session_start_time" in st.session_state:
-        end = st.session_state.get("session_end_time", datetime.datetime.now())
-        calculated_hours = max((end - st.session_state.session_start_time).total_seconds() / 3600.0, 0.01)
-    else:
-        calculated_hours = 1.0
+    cam_col, form_col = st.columns([1, 1])
 
-    total_hours = st.number_input("Adjust Monitored Hours Studied", min_value=0.01, max_value=24.0, value=float(f"{calculated_hours:.2f}"))
-    problems = st.number_input("Number of Questions / Problems Solved", min_value=0, step=1, value=0, key="auto_problems")
-    notes = st.text_area("Study Notes / Summary", placeholder="Write brief notes...", key="auto_notes")
-    uploaded = st.file_uploader("Upload solution files (optional)", accept_multiple_files=True, key="auto_upload")
+    with cam_col:
+        st.info("📌 Press 'Start' below to track your focus. Allow browser camera permissions if prompted.")
+        webrtc_ctx = webrtc_streamer(
+            key="student-companion-video",
+            video_processor_factory=FaceExpressionTransformer,
+            rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
+            media_stream_constraints={"video": True, "audio": False}
+        )
 
-    if st.button("✅ Save Study Log to Database", key="save_auto_log"):
-        date_value = datetime.date.today()
-        try:
-            insert_log(subject, topic, total_hours, problems, date_value)
-            st.success(f"✅ Saved {total_hours:.2f}h for {topic} to database!")
+        # Handle Background Session Durations
+        if webrtc_ctx and webrtc_ctx.state.playing:
+            if "session_start_time" not in st.session_state:
+                st.session_state.session_start_time = datetime.datetime.now()
+        else:
+            if "session_start_time" in st.session_state and "session_end_time" not in st.session_state:
+                st.session_state.session_end_time = datetime.datetime.now()
 
-            save_dir = os.path.join(os.path.dirname(__file__), "saved_solutions")
-            os.makedirs(save_dir, exist_ok=True)
-            for f in uploaded:
-                fname = f"{subject}_{topic}_{date_value}_{int(datetime.datetime.now().timestamp())}_{f.name}"
-                with open(os.path.join(save_dir, fname), "wb") as out:
-                    out.write(f.getbuffer())
+    with form_col:
+        st.markdown("### Step 3 — Finalize & Save Progress")
+        
+        # Safe run-time calculations
+        if "session_start_time" in st.session_state:
+            end = st.session_state.get("session_end_time", datetime.datetime.now())
+            calculated_hours = max((end - st.session_state.session_start_time).total_seconds() / 3600.0, 0.01)
+        else:
+            calculated_hours = 1.0
 
-            if notes:
-                notes_fname = f"{subject}_{topic}_{date_value}_{int(datetime.datetime.now().timestamp())}_notes.txt"
-                with open(os.path.join(save_dir, notes_fname), "w", encoding="utf-8") as nf:
-                    nf.write(notes)
+        total_hours = st.number_input("Adjust Monitored Hours Studied", min_value=0.01, max_value=24.0, value=float(f"{calculated_hours:.2f}"))
+        problems = st.number_input("Number of Questions / Problems Solved", min_value=0, step=1, value=0, key="auto_problems")
+        notes = st.text_area("Study Notes / Summary", placeholder="Write brief notes...", key="auto_notes")
+        uploaded = st.file_uploader("Upload solution files (optional)", accept_multiple_files=True, key="auto_upload")
 
-            # Clear out runtime monitoring tags
-            if "session_start_time" in st.session_state: del st.session_state["session_start_time"]
-            if "session_end_time" in st.session_state: del st.session_state["session_end_time"]
+        if st.button("✅ Save Study Log to Database", key="save_auto_log"):
+            date_value = datetime.date.today()
+            try:
+                insert_log(subject, topic, total_hours, problems, date_value)
+                st.success(f"✅ Saved {total_hours:.2f}h for {topic} to database!")
 
-            st.balloons()
-            st.rerun()
-        except Exception as e:
-            st.error(f"❌ Save failed: {e}")
+                save_dir = os.path.join(os.path.dirname(__file__), "saved_solutions")
+                os.makedirs(save_dir, exist_ok=True)
+                for f in uploaded:
+                    fname = f"{subject}_{topic}_{date_value}_{int(datetime.datetime.now().timestamp())}_{f.name}"
+                    with open(os.path.join(save_dir, fname), "wb") as out:
+                        out.write(f.getbuffer())
+
+                if notes:
+                    notes_fname = f"{subject}_{topic}_{date_value}_{int(datetime.datetime.now().timestamp())}_notes.txt"
+                    with open(os.path.join(save_dir, notes_fname), "w", encoding="utf-8") as nf:
+                        nf.write(notes)
+
+                # Reset logging variables
+                if "session_start_time" in st.session_state: del st.session_state["session_start_time"]
+                if "session_end_time" in st.session_state: del st.session_state["session_end_time"]
+
+                st.balloons()
+                st.rerun()
+            except Exception as e:
+                st.error(f"❌ Save failed: {e}")
 
     st.markdown("---")
     st.markdown("### Recent Logs")
