@@ -9,14 +9,25 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 
 # --------------------------------
-# 🗄️ RAW POSTGRESQL DATABASE CONNECTION
+# 🗄️ POSTGRESQL DATABASE CONNECTION (Updated to Support Neon Cloud & Local Fallback)
 # --------------------------------
-# Pulls connection string from your Streamlit Secret configurations
-DB_URL = os.getenv("CONNECTION_SQL_URL", "postgresql://postgres:postgres@localhost:5432/postgres")
+# Looks for the standard Streamlit Cloud Secrets variable, falls back to local environment
+DB_URL = os.getenv("DATABASE_URL")
 
 def get_conn():
-    """Establishes a raw connection to the PostgreSQL database."""
-    return psycopg2.connect(DB_URL)
+    """Establishes a connection to the PostgreSQL database (Production or Local Fallback)."""
+    if DB_URL:
+        # Production: Connect to your free Neon Cloud DB
+        return psycopg2.connect(DB_URL)
+    else:
+        # Local Development: Fallback if you test on your machine
+        return psycopg2.connect(
+            host="localhost",
+            database="student_progress",
+            user="postgres",
+            password="npg_FlwQbk3izPg0",
+            port=5432
+        )
 
 def ensure_table():
     """
@@ -293,7 +304,7 @@ def fill_logs_page(subject):
     except Exception:
         df = pd.DataFrame(columns=["Date", "Topic", "Hours Studied", "Problems Solved"])
 
-    st.markdown("### 📷 Real-Time Study Monitoring (Detect Person Sitting)")
+    st.markdown("### Step 2 — Real-Time Study Monitoring (Detect Person Sitting)")
     st.info("📌 Click 'Start Monitoring' to begin. Session will auto-stop when you leave camera or after long inactivity. Hours are auto-detected and saved.")
 
     col_cam1, col_cam2 = st.columns([2, 1])
@@ -440,7 +451,7 @@ def fill_logs_page(subject):
             st.session_state.cap = None
 
         st.markdown("---")
-        st.markdown("### Step 2 — Finalize & Save Study Log")
+        st.markdown("### Step 3 — Finalize & Save Study Log")
         
         total_elapsed = datetime.datetime.now() - st.session_state.start_time
         total_hours = total_elapsed.total_seconds() / 3600.0
