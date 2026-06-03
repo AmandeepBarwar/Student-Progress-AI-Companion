@@ -6,7 +6,8 @@ import altair as alt
 import cv2
 import numpy as np
 from sqlalchemy import create_engine
-from streamlit_webrtc import webrtc_streamer, VideoTransformerBase
+import av  # Required for packaging video processor frames in newer streamlit-webrtc versions
+from streamlit_webrtc import webrtc_streamer, VideoProcessorBase
 
 # --------------------------------
 # 🗄️ POSTGRESQL DATABASE CONNECTION (Updated with SQLAlchemy Contexts)
@@ -65,7 +66,6 @@ def fetch_subject_df(subject):
     df = pd.DataFrame(columns=["Subject", "Topic", "Hours Studied", "Problems Solved", "Date"])
     try:
         engine = get_sqla_engine()
-        # STEP 3: Using a strict SQLAlchemy connection context manager here instead of passing raw conn wrappers
         with engine.connect() as conn:
             df = pd.read_sql_query(sql, conn, params=(subject,))
     except Exception as e:
@@ -251,14 +251,15 @@ def log_entry_page():
         st.rerun()
 
 # --------------------------------
-# 📷 WEB CAMERA STREAM TRANSFORMER (Cloud-safe Alternative)
+# 📷 WEB CAMERA STREAM PROCESSOR (Updated Base & Frame Implementation)
 # --------------------------------
-class FaceExpressionTransformer(VideoTransformerBase):
+class FaceExpressionTransformer(VideoProcessorBase):
     """Processes real-time camera frames securely sent over WebRTC from the user's browser."""
     def __init__(self):
         self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
 
-    def transform(self, frame):
+    def recv(self, frame):
+        # Decode the underlying raw video frame array
         img = frame.to_ndarray(format="bgr24")
         img = cv2.flip(img, 1)
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -276,7 +277,8 @@ class FaceExpressionTransformer(VideoTransformerBase):
         cv2.rectangle(img, (0, 0), (w, h), frame_color, 3)
         cv2.putText(img, status, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, frame_color, 2)
         
-        return img
+        # Repackage output array safely inside a VideoFrame context object wrapper
+        return av.VideoFrame.from_ndarray(img, format="bgr24")
 
 # --------------------------------
 # 📋 FILL LOGS PAGE
@@ -306,10 +308,10 @@ def fill_logs_page(subject):
     st.markdown("### Step 2 — Real-Time Study Monitoring")
     st.info("📌 Press 'Start' on the media player box below to begin tracking. Grant permission to your camera inside your web browser.")
 
-    # STEP 2: Changed from streamlit_webrtc_interface to webrtc_streamer
+    # Fixed parameter routing to support newer component designs 
     webrtc_ctx = webrtc_streamer(
         key="student-companion-video",
-        video_transformer_factory=FaceExpressionTransformer,
+        video_processor_factory=FaceExpressionTransformer,
         rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
     )
 
