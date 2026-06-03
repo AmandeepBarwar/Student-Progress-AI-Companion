@@ -306,7 +306,6 @@ def fill_logs_page(subject):
     with cam_col:
         st.info("📌 Press 'Start' below to track your focus. Allow browser camera permissions if prompted.")
         
-        # Wrapped inside a try-except layer to avoid pipeline crashing on NoneType references
         try:
             webrtc_ctx = webrtc_streamer(
                 key="student-companion-video",
@@ -318,8 +317,7 @@ def fill_logs_page(subject):
             webrtc_ctx = None
             st.error("🎥 WebRTC streaming initialization encountered an issue.")
 
-        # --- SESSION TIMER LOGIC FIX ---
-        # We process changes using simple state indicators instead of immediate nested state changes
+        # Protected state mutation checks to prevent mid-thread runtime loop disruptions
         if webrtc_ctx and getattr(webrtc_ctx.state, "playing", False):
             if "session_start_time" not in st.session_state:
                 st.session_state.session_start_time = datetime.datetime.now()
@@ -359,7 +357,7 @@ def fill_logs_page(subject):
                     with open(os.path.join(save_dir, notes_fname), "w", encoding="utf-8") as nf:
                         nf.write(notes)
 
-                # Safe explicit cleanups
+                # Clean state records completely on drop transitions
                 st.session_state.pop("session_start_time", None)
                 st.session_state.pop("session_end_time", None)
 
@@ -662,7 +660,6 @@ def quiz_questions_page(subject, topic):
 
     questions = quiz_data[subject][topic]
     
-    # Using an isolated form block to prevent radio button selection updates from breaking page state execution
     with st.form(key=f"quiz_form_{subject}_{topic}"):
         user_choices = []
         for i, q in enumerate(questions, start=1):
@@ -680,7 +677,7 @@ def quiz_questions_page(subject, topic):
                 st.success(f"Q{idx}: ✅ Correct!")
                 score += 1
             else:
-                st.geometry = st.warning(f"Q{idx}: ❌ Incorrect! Correct answer was: {correct_answer}")
+                st.warning(f"Q{idx}: ❌ Incorrect! Correct answer was: {correct_answer}")
         st.markdown(f"### 🎯 Final Score: {score}/{len(questions)}")
 
     if st.button("⬅ Back to Topics"):
