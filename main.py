@@ -5,17 +5,22 @@ import os
 import altair as alt
 import cv2
 import numpy as np
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
 # --------------------------------
-# 🗄️ STREAMLIT NATIVE SQL CONNECTION (PostgreSQL)
+# 🗄️ RAW POSTGRESQL DATABASE CONNECTION
 # --------------------------------
-# Initialize the native SQL connection using your saved secrets
-conn = st.connection("sql")
+# Pulls connection string from your Streamlit Secret configurations
+DB_URL = os.getenv("CONNECTION_SQL_URL", "postgresql://postgres:postgres@localhost:5432/postgres")
+
+def get_conn():
+    """Establishes a raw connection to the PostgreSQL database."""
+    return psycopg2.connect(DB_URL)
 
 def ensure_table():
     """
     Creates the study_logs table automatically if it doesn't exist.
-    Note: PostgreSQL uses SERIAL instead of AUTO_INCREMENT.
     """
     sql = """
     CREATE TABLE IF NOT EXISTS study_logs (
@@ -27,45 +32,63 @@ def ensure_table():
         date DATE NOT NULL
     );
     """
-    with conn.session as session:
-        session.execute(sql)
-        session.commit()
+    conn = None
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute(sql)
+        conn.commit()
+        cur.close()
+    except Exception as e:
+        st.error(f"❌ Database initialization failed: {e}")
+    finally:
+        if conn:
+            conn.close()
 
 def insert_log(subject, topic, hours, problems, date_value):
     """
-    Inserts a new study log using safe PostgreSQL named-parameter bindings.
+    Inserts a new study log using raw psycopg2 parameterized %s bindings.
     """
     sql = """
     INSERT INTO study_logs (subject, topic, hours_studied, problems_solved, date)
-    VALUES (:subject, :topic, :hours, :problems, :date_value);
+    VALUES (%s, %s, %s, %s, %s);
     """
-    with conn.session as session:
-        session.execute(
-            sql, 
-            {
-                "subject": subject, 
-                "topic": topic, 
-                "hours": float(hours), 
-                "problems": int(problems), 
-                "date_value": date_value
-            }
-        )
-        session.commit()
+    conn = None
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute(sql, (subject, topic, float(hours), int(problems), date_value))
+        conn.commit()
+        cur.close()
+    except Exception as e:
+        st.error(f"❌ Failed to save record: {e}")
+    finally:
+        if conn:
+            conn.close()
 
 def fetch_subject_df(subject):
     """
-    Fetches study records for a given subject. 
-    Streamlit's conn.query automatically returns a formatted Pandas DataFrame.
+    Fetches study records for a given subject and structures it into a Pandas DataFrame.
     """
     sql = """
     SELECT subject AS "Subject", topic AS "Topic", 
            hours_studied AS "Hours Studied", problems_solved AS "Problems Solved", date AS "Date" 
-    FROM study_logs WHERE subject = :subject;
+    FROM study_logs WHERE subject = %s;
     """
-    # ttl="0x" disables caching so user dashboard updates display instantly
-    return conn.query(sql, params={"subject": subject}, ttl="0x")
+    conn = None
+    df = pd.DataFrame(columns=["Subject", "Topic", "Hours Studied", "Problems Solved", "Date"])
+    try:
+        conn = get_conn()
+        # Read SQL directly using pandas + psycopg2 connection context
+        df = pd.read_sql_query(sql, conn, params=(subject,))
+    except Exception as e:
+        st.error(f"❌ Failed to fetch data: {e}")
+    finally:
+        if conn:
+            conn.close()
+    return df
 
-# Ensure table exists on startup
+# Initialize database schemas cleanly before page configurations boot
 ensure_table()
 
 # --------------------------------
@@ -95,7 +118,7 @@ st.markdown("""
         border-left: 4px solid #667eea;
         margin: 1rem 0;
         font-weight: 700 !important;
-        transition: transform 0.3s ease 0.3s, box-shadow 0.3s ease;
+        transition: transform 0.3s ease;
         color: white;
     }
     .stButton > button:hover {
@@ -281,7 +304,7 @@ def fill_logs_page(subject):
         duration_metric = st.empty()
         attention_metric = st.empty()
 
-    # Initialize session state
+    # Initialize session states safely
     if "monitoring_active" not in st.session_state:
         st.session_state.monitoring_active = False
     if "start_time" not in st.session_state:
@@ -325,7 +348,7 @@ def fill_logs_page(subject):
                 st.session_state.cap.release()
                 st.session_state.cap = None
 
-    # Run monitoring if active
+    # Run loop logic if monitoring is up
     if st.session_state.monitoring_active and st.session_state.cap:
         cap = st.session_state.cap
 
@@ -363,7 +386,6 @@ def fill_logs_page(subject):
                 status = "⏸ Initializing..."
             else:
                 frame_diff = cv2.absdiff(st.session_state.prev_gray, gray)
-                motion_level = frame_diff.mean()
                 st.session_state.prev_gray = gray.copy()
 
                 if face_detected:
@@ -411,7 +433,7 @@ def fill_logs_page(subject):
 
         st.rerun()
 
-    # Show finalize form after monitoring stopped
+    # Finalize form after capture module terminates
     if not st.session_state.monitoring_active and st.session_state.total_frames > 0:
         if st.session_state.cap:
             st.session_state.cap.release()
@@ -458,14 +480,14 @@ def fill_logs_page(subject):
             except Exception as e:
                 st.error(f"❌ Save failed: {e}")
 
-    # Show recent logs
+    # Fallback to display historical datatable logs
     if not st.session_state.monitoring_active and st.session_state.total_frames == 0:
         st.markdown("---")
         st.markdown("### Recent Logs")
         if not df.empty:
             st.dataframe(df.sort_values("Date", ascending=False).reset_index(drop=True), use_container_width=True)
 
-    # Navigation
+    # Navigation controller hooks
     if st.button("⬅ Back to Log Menu"):
         st.session_state.page = "log_entry"
         if st.session_state.cap:
@@ -777,7 +799,7 @@ def quiz_questions_page(subject, topic):
         st.rerun()
 
 # --------------------------------
-# 🚀 PAGE CONTROLLER
+# 🚀 PAGE CONTROLLER ROUTING
 # --------------------------------
 if st.session_state.page == "home":
     home_page()
