@@ -16,7 +16,7 @@ load_dotenv()  # optional: read from .env in project root
 DB_HOST = os.getenv("DB_HOST", "localhost")
 DB_PORT = int(os.getenv("DB_PORT", 3306))
 DB_USER = os.getenv("DB_USER", "root")
-DB_PASS = os.getenv("DB_PASS", "Benda@123")
+DB_PASS = os.getenv("DB_PASS", "Aman@123")
 DB_NAME = os.getenv("DB_NAME", "student_progress")
 
 def get_conn():
