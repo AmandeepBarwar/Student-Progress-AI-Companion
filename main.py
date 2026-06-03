@@ -6,7 +6,7 @@ import altair as alt
 import cv2
 import numpy as np
 from sqlalchemy import create_engine
-from streamlit_webrtc import streamlit_webrtc_interface, VideoTransformerBase
+from streamlit_webrtc import webrtc_streamer, VideoTransformerBase
 
 # --------------------------------
 # 🗄️ POSTGRESQL DATABASE CONNECTION (Updated with SQLAlchemy Contexts)
@@ -56,7 +56,7 @@ def insert_log(subject, topic, hours, problems, date_value):
         st.error(f"❌ Failed to save record: {e}")
 
 def fetch_subject_df(subject):
-    """Fetches study records via SQLAlchemy to cleanly return a pandas DataFrame without warnings."""
+    """Fetches study records via SQLAlchemy connection to cleanly return a pandas DataFrame without warnings."""
     sql = """
     SELECT subject AS "Subject", topic AS "Topic", 
            hours_studied AS "Hours Studied", problems_solved AS "Problems Solved", date AS "Date" 
@@ -65,6 +65,7 @@ def fetch_subject_df(subject):
     df = pd.DataFrame(columns=["Subject", "Topic", "Hours Studied", "Problems Solved", "Date"])
     try:
         engine = get_sqla_engine()
+        # STEP 3: Using a strict SQLAlchemy connection context manager here instead of passing raw conn wrappers
         with engine.connect() as conn:
             df = pd.read_sql_query(sql, conn, params=(subject,))
     except Exception as e:
@@ -305,15 +306,15 @@ def fill_logs_page(subject):
     st.markdown("### Step 2 — Real-Time Study Monitoring")
     st.info("📌 Press 'Start' on the media player box below to begin tracking. Grant permission to your camera inside your web browser.")
 
-    # Render safe browser streaming channel interface
-    webrtc_ctx = streamlit_webrtc_interface(
+    # STEP 2: Changed from streamlit_webrtc_interface to webrtc_streamer
+    webrtc_ctx = webrtc_streamer(
         key="student-companion-video",
         video_transformer_factory=FaceExpressionTransformer,
         rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
     )
 
     # Initialize tracking timestamps in background state variables
-    if webrtc_ctx.state.playing:
+    if webrtc_ctx and webrtc_ctx.state.playing:
         if "session_start_time" not in st.session_state:
             st.session_state.session_start_time = datetime.datetime.now()
     else:
