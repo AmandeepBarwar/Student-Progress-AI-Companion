@@ -1,7 +1,6 @@
 streamlit
 pandas
 altair
-opencv-python
-mysql-connector-python
-python-dotenv
+psycopg2-binary
+sqlalchemy
 opencv-python-headless
