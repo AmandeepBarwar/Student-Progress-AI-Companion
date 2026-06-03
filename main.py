@@ -3,36 +3,23 @@ import pandas as pd
 import datetime
 import os
 import altair as alt
-import mysql.connector
-from dotenv import load_dotenv
 import cv2
 import numpy as np
 
 # --------------------------------
-# SQL DATABASE CONNECTION
+# 🗄️ STREAMLIT NATIVE SQL CONNECTION (PostgreSQL)
 # --------------------------------
-load_dotenv()  # optional: read from .env in project root
-
-DB_HOST = os.getenv("DB_HOST", "localhost")
-DB_PORT = int(os.getenv("DB_PORT", 3306))
-DB_USER = os.getenv("DB_USER", "root")
-DB_PASS = os.getenv("DB_PASS", "Aman@123")
-DB_NAME = os.getenv("DB_NAME", "student_progress")
-
-def get_conn():
-    return mysql.connector.connect(
-        host=DB_HOST,
-        port=DB_PORT,
-        user=DB_USER,
-        password=DB_PASS,
-        database=DB_NAME,
-        autocommit=False
-    )
+# Initialize the native SQL connection using your saved secrets
+conn = st.connection("sql")
 
 def ensure_table():
+    """
+    Creates the study_logs table automatically if it doesn't exist.
+    Note: PostgreSQL uses SERIAL instead of AUTO_INCREMENT.
+    """
     sql = """
     CREATE TABLE IF NOT EXISTS study_logs (
-        id INT AUTO_INCREMENT PRIMARY KEY,
+        id SERIAL PRIMARY KEY,
         subject VARCHAR(255) NOT NULL,
         topic VARCHAR(255) NOT NULL,
         hours_studied FLOAT NOT NULL,
@@ -40,44 +27,43 @@ def ensure_table():
         date DATE NOT NULL
     );
     """
-    conn = None
-    try:
-        conn = get_conn()
-        cur = conn.cursor()
-        cur.execute(sql)
-        conn.commit()
-        cur.close()
-    finally:
-        if conn:
-            conn.close()
+    with conn.session as session:
+        session.execute(sql)
+        session.commit()
 
 def insert_log(subject, topic, hours, problems, date_value):
+    """
+    Inserts a new study log using safe PostgreSQL named-parameter bindings.
+    """
     sql = """
     INSERT INTO study_logs (subject, topic, hours_studied, problems_solved, date)
-    VALUES (%s, %s, %s, %s, %s)
+    VALUES (:subject, :topic, :hours, :problems, :date_value);
     """
-    conn = None
-    try:
-        conn = get_conn()
-        cur = conn.cursor()
-        cur.execute(sql, (subject, topic, float(hours), int(problems), date_value))
-        conn.commit()
-        cur.close()
-    finally:
-        if conn:
-            conn.close()
+    with conn.session as session:
+        session.execute(
+            sql, 
+            {
+                "subject": subject, 
+                "topic": topic, 
+                "hours": float(hours), 
+                "problems": int(problems), 
+                "date_value": date_value
+            }
+        )
+        session.commit()
 
 def fetch_subject_df(subject):
-    conn = None
-    try:
-        conn = get_conn()
-        sql = ("SELECT subject AS Subject, topic AS Topic, "
-               "hours_studied AS `Hours Studied`, problems_solved AS `Problems Solved`, date AS `Date` "
-               "FROM study_logs WHERE subject = %s")
-        return pd.read_sql(sql, conn, params=(subject,))
-    finally:
-        if conn:
-            conn.close()
+    """
+    Fetches study records for a given subject. 
+    Streamlit's conn.query automatically returns a formatted Pandas DataFrame.
+    """
+    sql = """
+    SELECT subject AS "Subject", topic AS "Topic", 
+           hours_studied AS "Hours Studied", problems_solved AS "Problems Solved", date AS "Date" 
+    FROM study_logs WHERE subject = :subject;
+    """
+    # ttl="0x" disables caching so user dashboard updates display instantly
+    return conn.query(sql, params={"subject": subject}, ttl="0x")
 
 # Ensure table exists on startup
 ensure_table()
@@ -137,7 +123,6 @@ st.markdown("""
     }
 </style>
 """, unsafe_allow_html=True)
-
 
 # --------------------------------
 # 🧭 SESSION STATE
@@ -317,7 +302,6 @@ def fill_logs_page(subject):
         if st.button("▶ Start Monitoring", key="start_monitor"):
             st.session_state.monitoring_active = True
             st.session_state.start_time = datetime.datetime.now()
-            # Try multiple camera indices to find available camera
             cap = None
             for camera_idx in [0, 1, -1]:
                 cap = cv2.VideoCapture(camera_idx)
@@ -351,15 +335,14 @@ def fill_logs_page(subject):
             st.rerun()
             return
 
-        # Optimize camera settings for Windows
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
         cap.set(cv2.CAP_PROP_FPS, 15)
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Reduce buffer to minimize lag
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
         face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
 
-        frames_per_update = 3  # Reduced from 5 for better responsiveness
+        frames_per_update = 3
         frame_count = 0
 
         while frame_count < frames_per_update and st.session_state.monitoring_active:
@@ -399,7 +382,6 @@ def fill_logs_page(subject):
             st.session_state.total_frames += 1
             frame_count += 1
 
-            # Draw detection boxes
             for (x, y, w_face, h_face) in faces:
                 cv2.rectangle(frame, (x, y), (x + w_face, y + h_face), frame_color, 2)
             h, w = frame.shape[:2]
@@ -419,7 +401,6 @@ def fill_logs_page(subject):
             duration_metric.metric("Session Time", f"{elapsed_hours}h {elapsed_minutes}m {elapsed_secs}s")
             attention_metric.metric("Attention Level", "🟢 Good" if efficiency > 70 else "🟡 Fair" if efficiency > 40 else "🔴 Low")
 
-            # Auto-stop if no person detected
             if st.session_state.no_person_frames > 150:
                 st.session_state.monitoring_active = False
                 if st.session_state.cap:
@@ -550,27 +531,22 @@ def progress_page(subject):
             weekly_summary.rename(columns={"Topic": "Topic", "Hours Studied": "Total Hours (This Week)"}),
         )
 
-    # --- NEW: Display uploaded files AND notes sorted by topic ---
     st.markdown("---")
     st.markdown("### 📁 Uploaded Files & Study Notes (Sorted by Topic)")
 
     save_dir = os.path.join(os.path.dirname(__file__), "saved_solutions")
 
     if os.path.exists(save_dir):
-        # Get both uploaded files and notes
         all_files = [f for f in os.listdir(save_dir) if subject in f]
         
         if all_files:
             files_by_topic = {}
-            
             for file in sorted(all_files, reverse=True):
-                # filename pattern: {subject}_{topic}_{date}_{timestamp}_{originalname} or {subject}_{topic}_{date}_{timestamp}_notes.txt
                 parts = file.split("_")
                 if len(parts) >= 4:
-                    topic_name = "_".join(parts[1:-3])  # handle multi-word topics
+                    topic_name = "_".join(parts[1:-3])
                 else:
                     topic_name = "Misc"
-
                 files_by_topic.setdefault(topic_name, []).append(file)
 
             for topic_name in sorted(files_by_topic.keys()):
@@ -583,7 +559,6 @@ def progress_page(subject):
                         except Exception:
                             size_kb = None
 
-                        # Check if it's a notes file
                         is_notes = fname.endswith("_notes.txt")
                         
                         if is_notes:
@@ -593,7 +568,6 @@ def progress_page(subject):
 
                         ext = os.path.splitext(fname)[1].lower()
                         
-                        # Inline previews for common media types
                         try:
                             if ext in [".png", ".jpg", ".jpeg", ".bmp", ".gif"]:
                                 st.image(file_path, use_column_width=True)
@@ -602,7 +576,6 @@ def progress_page(subject):
                             elif ext in [".mp3", ".wav", ".ogg", ".flac"]:
                                 st.audio(file_path)
                             elif is_notes:
-                                # Display notes text content
                                 try:
                                     with open(file_path, "r", encoding="utf-8") as nf:
                                         content = nf.read()
@@ -610,10 +583,8 @@ def progress_page(subject):
                                 except Exception:
                                     pass
                         except Exception:
-                            # preview may fail for some files; ignore and still offer download
                             pass
 
-                        # Download button
                         try:
                             with open(file_path, "rb") as bf:
                                 data = bf.read()
@@ -706,7 +677,7 @@ def dashboard_page(subject):
             st.rerun()
 
 # --------------------------------
-# 🧠 QUIZ PAGES (unchanged)
+# 🧠 QUIZ PAGES
 # --------------------------------
 def quiz_subject_page():
     st.markdown("## 🧠 Choose a Subject for Your Quiz")
